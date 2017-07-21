@@ -294,6 +294,8 @@ class Matcha {
           ++ofs;
         }
       }
+      // ~50% because correlation may be split between two windows, and <50%
+      // to survive spurious triggers.
       if ((unsigned)best.score < 0.4 * m_runs[0].vec.size()) {
         return false;
       }
@@ -345,7 +347,7 @@ class Source {
   public:
     virtual ~Source() {}
     virtual ULong64_t GetEntryIndex() const = 0;
-    virtual bool GetNext() = 0;
+    virtual bool GetNext(bool = true) = 0;
     virtual ULong64_t GetVulomTS() const = 0;
     virtual void SetEntryIndex(ULong64_t) = 0;
 };
@@ -373,9 +375,13 @@ class ACTARSource: public Source {
     ULong64_t GetEntryIndex() const {
       return m_entry_i;
     }
-    bool GetNext() {
+    bool GetNext(bool a_die_on_fail = true) {
       ++m_entry_i;
       if (m_entry_i == m_nentries) {
+        if (a_die_on_fail) {
+          std::cerr << "ACTAR file ended too fast!\n";
+          exit(EXIT_FAILURE);
+        }
         return false;
       }
       m_tree->GetEvent(m_entry_i);
@@ -430,10 +436,14 @@ class MainzSource: public Source {
     ULong64_t GetHeimtime() const {
       return m_heimtime_prev;
     }
-    bool GetNext() {
+    bool GetNext(bool a_die_on_fail = true) {
       for (;;) {
         ++m_entry_i;
         if (m_entry_i == m_nentries) {
+          if (a_die_on_fail) {
+            std::cerr << "Main file ended too fast!\n";
+            exit(EXIT_FAILURE);
+          }
           return false;
         }
         m_tree->GetEvent(m_entry_i);
@@ -507,10 +517,7 @@ int main(int argc, char **argv)
   // We have 1 event from ACTAR.
   // Get 1 Heimtime from Mainz DAQ.
   while (0 == mainz.GetHeimtime()) {
-    if (!mainz.GetNext()) {
-      std::cerr << "Main: Mainz DAQ does not even have a single Heimtime!\n";
-      exit(EXIT_FAILURE);
-    }          
+    mainz.GetNext();
   }
   std::cout << std::hex << "Main: Mainz found Heimtime 0x" <<
       mainz.GetHeimtime() << ".\n";
@@ -555,19 +562,13 @@ int main(int argc, char **argv)
     }
     for (size_t i = 0; i < c_matching_size_startup; ++i) {
       matcha.Add(i0, src0->GetVulomTS());
-      if (!src0->GetNext()) {
-        std::cerr << "Too little data for timestamp sync!\n";
-        exit(EXIT_FAILURE);
-      }
+      src0->GetNext();
     }
     // Try to match delta-t against Mainz timestamp windows.
     for (;;) {
       for (size_t i = 0; i < c_matching_size_startup; ++i) {
         matcha.Add(i1, src1->GetVulomTS());
-        if (!src1->GetNext()) {
-          std::cerr << "Too little data for timestamp sync!\n";
-          exit(EXIT_FAILURE);
-        }
+        src1->GetNext();
       }
       // Cross your fingers.
       if (matcha.Match()) {
@@ -606,7 +607,7 @@ match_found:
     ULong64_t ts_mainz = mainz.GetVulomTS();
     Long64_t dt = ts_actar - ts_mainz;
     dt = 0 > dt ? -dt : dt;
-//std::cout << ts_actar << '-' << ts_mainz << '=' << dt << '\n';
+std::cout << ts_actar << '-' << ts_mainz << '=' << dt << '\n';
     bool do_next_actar = false;
     bool do_next_mainz = false;
     if (dt < c_window) {
@@ -620,13 +621,13 @@ match_found:
       do_next_mainz = true;
     }
     if (do_next_actar) {
-      if (!actar.GetNext()) {
+      if (!actar.GetNext(false)) {
         break;
       }
       matcha_online.Add(0, actar.GetVulomTS());
     }
     if (do_next_mainz) {
-      if (!mainz.GetNext()) {
+      if (!mainz.GetNext(false)) {
         break;
       }
       matcha_online.Add(1, mainz.GetVulomTS());
@@ -638,6 +639,6 @@ match_found:
       }
     }
   }
-
+  std::cout << "Well, that ended well!\n";
   return 0;
 }
